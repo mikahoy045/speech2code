@@ -1,0 +1,20 @@
+services:
+  tts:
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    ports:
+      - "7860:7860"
+    volumes:
+      - ./config:/config
+      - ./model-cache:/root/.cache/huggingface
+      - /tmp:/tmp:rw
+      - ${HOME}/.config/pulse/cookie:/root/.config/pulse/cookie:ro
+    devices:
+      - /dev/snd
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - PULSE_SERVER=${PULSE_SERVER:-}
+    group_add:
+      - audio
+    privileged: true

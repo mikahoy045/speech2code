@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TTS Push-to-Talk</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background: #0f172a; }
+    #log-box { font-family: monospace; height: 220px; overflow-y: auto; scroll-behavior: smooth; }
+    .pulse { animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  </style>
+</head>
+<body class="text-slate-200 min-h-screen p-6">
+  <div class="max-w-2xl mx-auto space-y-6">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between">
+      <div>
+        <h1 class="text-2xl font-bold text-white">Push-to-Talk STT</h1>
+        <p class="text-slate-400 text-sm">faster-whisper · parakeet · CPU offline</p>
+      </div>
+      <div class="flex items-center gap-3">
+        <span id="status-dot" class="w-3 h-3 rounded-full bg-slate-600"></span>
+        <span id="status-text" class="text-sm text-slate-400">Stopped</span>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="flex gap-3">
+      <button id="btn-start"
+        class="flex-1 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition"
+        onclick="startSTT()">Start</button>
+      <button id="btn-stop"
+        class="flex-1 py-2.5 rounded-lg bg-red-700 hover:bg-red-600 text-white font-semibold transition"
+        onclick="stopSTT()">Stop</button>
+    </div>
+
+    <!-- Settings -->
+    <div class="bg-slate-800 rounded-xl p-5 space-y-4">
+      <h2 class="text-white font-semibold text-base">Settings</h2>
+
+      <div class="grid grid-cols-2 gap-4">
+        <label class="space-y-1">
+          <span class="text-slate-400 text-sm">Hotkey</span>
+          <select id="hotkey" class="w-full bg-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+            {% for k in ["KEY_PAUSE","KEY_F4","KEY_F8","KEY_F9","KEY_F10","KEY_INSERT","KEY_RIGHTALT","KEY_RIGHTCTRL"] %}
+            <option value="{{k}}" {% if config.hotkey == k %}selected{% endif %}>{{k}}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label class="space-y-1">
+          <span class="text-slate-400 text-sm">Language</span>
+          <select id="language" class="w-full bg-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+            {% for l in [("en","English"),("id","Indonesian"),("zh","Chinese"),("ja","Japanese"),("fr","French"),("de","German"),("es","Spanish"),("auto","Auto-detect")] %}
+            <option value="{{l[0]}}" {% if config.language == l[0] %}selected{% endif %}>{{l[1]}}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label class="space-y-1">
+          <span class="text-slate-400 text-sm">Model</span>
+          <select id="model" class="w-full bg-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+            {% for m in [("parakeet-tdt-0.6b-v3","Parakeet 0.6B (recommended)"),("canary-1b-v2","Canary 1B"),("tiny.en","Whisper tiny.en"),("base.en","Whisper base.en"),("small.en","Whisper small.en")] %}
+            <option value="{{m[0]}}" {% if config.model == m[0] %}selected{% endif %}>{{m[1]}}</option>
+            {% endfor %}
+          </select>
+        </label>
+
+        <label class="space-y-1">
+          <span class="text-slate-400 text-sm">Compute Type</span>
+          <select id="compute_type" class="w-full bg-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+            {% for c in [("int8","int8 (fastest CPU)"),("float16","float16"),("float32","float32 (slowest)")] %}
+            <option value="{{c[0]}}" {% if config.compute_type == c[0] %}selected{% endif %}>{{c[1]}}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </div>
+
+      <button onclick="saveSettings()"
+        class="w-full py-2 rounded-lg bg-slate-600 hover:bg-slate-500 text-white text-sm font-semibold transition">
+        Save Settings
+      </button>
+      <p id="save-msg" class="text-emerald-400 text-xs text-center hidden">Saved!</p>
+    </div>
+
+    <!-- Logs -->
+    <div class="bg-slate-800 rounded-xl p-5 space-y-2">
+      <div class="flex items-center justify-between">
+        <h2 class="text-white font-semibold text-base">Log</h2>
+        <button onclick="document.getElementById('log-box').innerHTML=''"
+          class="text-slate-500 hover:text-slate-300 text-xs">Clear</button>
+      </div>
+      <div id="log-box" class="bg-slate-900 rounded-lg p-3 text-xs text-slate-400 space-y-0.5"></div>
+    </div>
+
+    <p class="text-slate-600 text-xs text-center">Hold hotkey → speak → release → text appears in focused window</p>
+  </div>
+
+  <script>
+    const statusDot = document.getElementById('status-dot');
+    const statusText = document.getElementById('status-text');
+    const logBox = document.getElementById('log-box');
+
+    function setStatus(running) {
+      if (running) {
+        statusDot.className = 'w-3 h-3 rounded-full bg-emerald-400 pulse';
+        statusText.textContent = 'Running';
+        statusText.className = 'text-sm text-emerald-400';
+      } else {
+        statusDot.className = 'w-3 h-3 rounded-full bg-slate-600';
+        statusText.textContent = 'Stopped';
+        statusText.className = 'text-sm text-slate-400';
+      }
+    }
+
+    function appendLog(line) {
+      if (!line.trim()) return;
+      const el = document.createElement('div');
+      el.textContent = line;
+      logBox.appendChild(el);
+      logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    async function startSTT() {
+      const res = await fetch('/start', { method: 'POST' });
+      const data = await res.json();
+      if (!data.ok) appendLog('[error] ' + data.error);
+      else { appendLog('[system] Started'); pollStatus(); }
+    }
+
+    async function stopSTT() {
+      await fetch('/stop', { method: 'POST' });
+      appendLog('[system] Stopped');
+      setStatus(false);
+    }
+
+    async function saveSettings() {
+      const cfg = {
+        hotkey: document.getElementById('hotkey').value,
+        language: document.getElementById('language').value,
+        model: document.getElementById('model').value,
+        compute_type: document.getElementById('compute_type').value,
+        device: 'cpu',
+      };
+      await fetch('/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cfg),
+      });
+      const msg = document.getElementById('save-msg');
+      msg.classList.remove('hidden');
+      setTimeout(() => msg.classList.add('hidden'), 2000);
+    }
+
+    async function pollStatus() {
+      const res = await fetch('/status');
+      const { running } = await res.json();
+      setStatus(running);
+    }
+
+    // SSE log stream
+    const evtSource = new EventSource('/logs');
+    evtSource.onmessage = (e) => appendLog(e.data);
+
+    // Poll status every 3s
+    setInterval(pollStatus, 3000);
+    pollStatus();
+  </script>
+</body>
+</html>
