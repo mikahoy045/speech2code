@@ -14,7 +14,6 @@ services:
       - /dev/snd
     environment:
       - DISPLAY=${DISPLAY:-:0}
-      - PULSE_SERVER=unix:/tmp/pulse-PKdhtXMmr18n/native
     group_add:
       - audio
     privileged: true

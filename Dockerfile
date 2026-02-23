@@ -25,6 +25,10 @@ RUN uv tool install faster-whisper-hotkey
 COPY patch.sh /patch.sh
 RUN chmod +x /patch.sh && bash /patch.sh
 
+
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 COPY web/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
@@ -33,4 +37,5 @@ COPY web/ /app/
 WORKDIR /app
 EXPOSE 7860
 
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python", "app.py"]
