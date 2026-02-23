@@ -15,7 +15,6 @@
 <body class="text-slate-200 min-h-screen p-6">
   <div class="max-w-2xl mx-auto space-y-6">
 
-    <!-- Header -->
     <div class="flex items-center justify-between">
       <div>
         <h1 class="text-2xl font-bold text-white">Push-to-Talk STT</h1>
@@ -27,7 +26,6 @@
       </div>
     </div>
 
-    <!-- Controls -->
     <div class="flex gap-3">
       <button id="btn-start"
         class="flex-1 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition"
@@ -37,9 +35,18 @@
         onclick="stopSTT()">Stop</button>
     </div>
 
-    <!-- Settings -->
     <div class="bg-slate-800 rounded-xl p-5 space-y-4">
       <h2 class="text-white font-semibold text-base">Settings</h2>
+
+      <label class="space-y-1 block">
+        <span class="text-slate-400 text-sm">Input Device</span>
+        <div class="flex gap-2">
+          <select id="input_device" class="flex-1 bg-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+            <option value="auto">Auto (default pulse source)</option>
+          </select>
+          <button onclick="refreshSources()" class="px-3 py-2 bg-slate-600 hover:bg-slate-500 rounded-lg text-white text-xs transition" title="Refresh">↻</button>
+        </div>
+      </label>
 
       <div class="grid grid-cols-2 gap-4">
         <label class="space-y-1">
@@ -86,7 +93,6 @@
       <p id="save-msg" class="text-emerald-400 text-xs text-center hidden">Saved!</p>
     </div>
 
-    <!-- Logs -->
     <div class="bg-slate-800 rounded-xl p-5 space-y-2">
       <div class="flex items-center justify-between">
         <h2 class="text-white font-semibold text-base">Log</h2>
@@ -143,6 +149,7 @@
         language: document.getElementById('language').value,
         model: document.getElementById('model').value,
         compute_type: document.getElementById('compute_type').value,
+        input_device: document.getElementById('input_device').value,
         device: 'cpu',
       };
       await fetch('/settings', {
@@ -161,13 +168,29 @@
       setStatus(running);
     }
 
-    // SSE log stream
+    const savedInputDevice = '{{ config.input_device }}';
+
+    async function refreshSources() {
+      const sel = document.getElementById('input_device');
+      const current = sel.value;
+      try {
+        const res = await fetch('/sources');
+        const sources = await res.json();
+        sel.innerHTML = '<option value="auto">Auto (default pulse source)</option>';
+        sources.forEach(src => {
+          const opt = document.createElement('option');
+          opt.value = src;
+          opt.textContent = src;
+          sel.appendChild(opt);
+        });
+        if ([...sel.options].some(o => o.value === current)) sel.value = current;
+        else if ([...sel.options].some(o => o.value === savedInputDevice)) sel.value = savedInputDevice;
+      } catch(e) { }
+    }
     const evtSource = new EventSource('/logs');
     evtSource.onmessage = (e) => appendLog(e.data);
-
-    // Poll status every 3s
-    setInterval(pollStatus, 3000);
-    pollStatus();
+    setInterval(pollStatus, 3000); pollStatus();
+    refreshSources();
   </script>
 </body>
 </html>

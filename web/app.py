@@ -18,6 +18,7 @@ DEFAULT_CONFIG = {
     "device": "cpu",
     "compute_type": "float16",
     "model": "parakeet-tdt-0.6b-v3",
+    "input_device": "auto",
 }
 
 _process = None
@@ -64,6 +65,23 @@ def get_default_pulse_source() -> str:
     return "auto"
 
 
+def list_pulse_sources() -> list:
+    results = []
+    try:
+        lines = subprocess.check_output(
+            ["pactl", "list", "sources", "short"], timeout=5
+        ).decode().strip().splitlines()
+        for line in lines:
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                name = parts[1]
+                if "monitor" not in name:
+                    results.append(name)
+    except Exception:
+        pass
+    return results
+
+
 def _model_type_for(model: str) -> str:
     if model == "parakeet-tdt-0.6b-v3":
         return "parakeet"
@@ -81,7 +99,9 @@ def _model_name_for(model: str) -> str:
 
 
 def write_tool_settings(cfg: dict) -> None:
-    device_name = get_default_pulse_source()
+    device_name = cfg.get("input_device", "auto")
+    if device_name == "auto":
+        device_name = get_default_pulse_source()
     model = cfg.get("model", DEFAULT_CONFIG["model"])
     settings = {
         "device_name": device_name,
@@ -113,13 +133,20 @@ def _is_running() -> bool:
 
 @app.route("/")
 def index():
-    return render_template("index.html", config=load_config())
+    cfg = load_config()
+    sources = list_pulse_sources()
+    return render_template("index.html", config=cfg, sources=sources)
+
+
+@app.route("/sources")
+def sources():
+    return jsonify(list_pulse_sources())
 
 
 @app.route("/settings", methods=["POST"])
 def update_settings():
     cfg = request.get_json(force=True)
-    allowed = {"hotkey", "language", "device", "compute_type", "model"}
+    allowed = {"hotkey", "language", "device", "compute_type", "model", "input_device"}
     filtered = {k: v for k, v in cfg.items() if k in allowed}
     save_config(filtered)
     return jsonify({"ok": True})

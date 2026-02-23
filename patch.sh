@@ -5,8 +5,9 @@ TOOL_SITE="$TOOL_DIR/lib/python3.10/site-packages/faster_whisper_hotkey"
 
 TERMINAL_PY=$(find "$TOOL_DIR" -path "*/faster_whisper_hotkey/terminal.py" 2>/dev/null | head -1)
 TRANSCRIBE_PY=$(find "$TOOL_DIR" -path "*/faster_whisper_hotkey/transcribe.py" 2>/dev/null | head -1)
+PASTE_PY=$(find "$TOOL_DIR" -path "*/faster_whisper_hotkey/paste.py" 2>/dev/null | head -1)
 
-if [ -z "$TERMINAL_PY" ] || [ -z "$TRANSCRIBE_PY" ]; then
+if [ -z "$TERMINAL_PY" ] || [ -z "$TRANSCRIBE_PY" ] || [ -z "$PASTE_PY" ]; then
     echo "[patch] faster_whisper_hotkey package not found — skipping (tool not installed yet?)"
     exit 0
 fi
@@ -80,15 +81,21 @@ PYEOF
     echo "[patch] terminal.py done."
 fi
 
-TRANSCRIBE_MARKER="# PATCHED: headless-no-curses"
+TRANSCRIBE_MARKER="# PATCHED: headless-xdotool-v3"
 if grep -q "$TRANSCRIBE_MARKER" "$TRANSCRIBE_PY" 2>/dev/null; then
     echo "[patch] transcribe.py already patched"
 else
-    echo "[patch] Patching transcribe.py to run headless (skip curses menus)..."
+    echo "[patch] Patching transcribe.py (headless + xdotool + parecord)..."
     cat > "$TRANSCRIBE_PY" << 'PYEOF'
-# PATCHED: headless-no-curses
+# PATCHED: headless-xdotool-v3
 import logging
+import os
+import subprocess
+import threading
 import warnings
+import time
+
+import numpy as np
 
 warnings.filterwarnings(
     "ignore",
@@ -108,6 +115,137 @@ from .transcriber import MicrophoneTranscriber
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+
+
+def _parecord_reader(self):
+    CHUNK = 4000
+    try:
+        while not self.stop_event.is_set():
+            raw = self._parec_proc.stdout.read(CHUNK * 4)
+            if not raw:
+                break
+            audio_data = np.frombuffer(raw, dtype=np.float32).copy()
+            peak = np.abs(audio_data).max()
+            if peak > 0:
+                audio_data = audio_data / peak
+            new_index = self.buffer_index + len(audio_data)
+            if new_index > self.max_buffer_length:
+                audio_data = audio_data[: self.max_buffer_length - self.buffer_index]
+                new_index = self.max_buffer_length
+            self.audio_buffer[self.buffer_index : new_index] = audio_data
+            self.buffer_index = new_index
+    except Exception as e:
+        logger.error(f"parecord reader error: {e}")
+
+
+def _patched_start_recording(self):
+    if not self.is_recording:
+        logger.info("Starting recording (parecord)...")
+        self.stop_event.clear()
+        self.is_recording = True
+        self.recording_start_time = time.time()
+        source = self.device_name if self.device_name and self.device_name != "auto" else None
+        cmd = [
+            "parecord",
+            "--rate", str(self.sample_rate),
+            "--channels", "1",
+            "--format", "float32le",
+            "--raw",
+        ]
+        if source:
+            cmd.extend(["--device", source])
+        logger.info(f"parecord cmd: {' '.join(cmd)}")
+        self._parec_proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        self._parec_thread = threading.Thread(
+            target=_parecord_reader, args=(self,), daemon=True
+        )
+        self._parec_thread.start()
+
+
+def _patched_stop_recording_and_transcribe(self):
+    if hasattr(self, "timer") and self.timer:
+        self.timer.cancel()
+    if self.is_recording:
+        logger.info("Stopping recording and starting transcription...")
+        self.stop_event.set()
+        self.is_recording = False
+        if hasattr(self, "_parec_proc") and self._parec_proc:
+            try:
+                self._parec_proc.terminate()
+                self._parec_proc.wait(timeout=2)
+            except Exception:
+                try:
+                    self._parec_proc.kill()
+                except Exception:
+                    pass
+        if hasattr(self, "_parec_thread") and self._parec_thread:
+            self._parec_thread.join(timeout=2)
+        if self.buffer_index > 0:
+            audio_data = self.audio_buffer[: self.buffer_index]
+            recording_duration = time.time() - self.recording_start_time
+            MIN_RECORDING_DURATION = 1.0
+            if recording_duration >= MIN_RECORDING_DURATION:
+                self.audio_buffer = np.zeros(
+                    self.max_buffer_length, dtype=np.float32
+                )
+                self.buffer_index = 0
+                self.transcription_queue.append(audio_data)
+                self.process_next_transcription()
+                logger.info(
+                    f"Recording duration: {recording_duration:.2f}s - processing transcription"
+                )
+            else:
+                self.audio_buffer = np.zeros(
+                    self.max_buffer_length, dtype=np.float32
+                )
+                self.buffer_index = 0
+                logger.info(
+                    f"Recording duration: {recording_duration:.2f}s - too short, skipping"
+                )
+        else:
+            self.buffer_index = 0
+            self.is_transcribing = False
+            self.last_transcription_end_time = time.time()
+            self.process_next_transcription()
+
+
+def _xdotool_transcribe_and_send(self, audio_data):
+    try:
+        self.is_transcribing = True
+        rms = float(np.sqrt(np.mean(audio_data**2)))
+        logger.info(
+            f"Audio: shape={audio_data.shape}, rms={rms:.6f}, "
+            f"duration={len(audio_data)/self.sample_rate:.2f}s"
+        )
+        transcribed_text = self.model_wrapper.transcribe(
+            audio_data,
+            sample_rate=self.sample_rate,
+            language=self.settings.language,
+        )
+        logger.info(f"Transcription result: '{transcribed_text}'")
+        if transcribed_text.strip():
+            subprocess.run(
+                ["xdotool", "type", "--clearmodifiers", "--delay", "20",
+                 "--", transcribed_text],
+                env={**os.environ},
+            )
+        else:
+            logger.warning("Empty transcription - no text to type")
+    except Exception as e:
+        import traceback
+        logger.error(f"Transcription error: {e}")
+        traceback.print_exc()
+    finally:
+        self.is_transcribing = False
+        self.last_transcription_end_time = time.time()
+        self.process_next_transcription()
+
+
+MicrophoneTranscriber.transcribe_and_send = _xdotool_transcribe_and_send
+MicrophoneTranscriber.start_recording = _patched_start_recording
+MicrophoneTranscriber.stop_recording_and_transcribe = _patched_stop_recording_and_transcribe
 
 
 def main():
@@ -138,6 +276,34 @@ if __name__ == "__main__":
     main()
 PYEOF
     echo "[patch] transcribe.py done."
+fi
+
+CLIPBOARD_PY=$(find "$TOOL_DIR" -path "*/faster_whisper_hotkey/clipboard.py" 2>/dev/null | head -1)
+
+CLIPBOARD_MARKER="# PATCHED: force-type-fallback"
+if grep -q "$CLIPBOARD_MARKER" "$CLIPBOARD_PY" 2>/dev/null; then
+    echo "[patch] clipboard.py already patched"
+else
+    echo "[patch] Patching clipboard.py to force character-by-character typing..."
+    cat > "$CLIPBOARD_PY" << 'PYEOF'
+# PATCHED: force-type-fallback
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def backup_clipboard():
+    return None
+
+
+def set_clipboard(text: str) -> bool:
+    return False
+
+
+def restore_clipboard(original_text):
+    pass
+PYEOF
+    echo "[patch] clipboard.py done."
 fi
 
 SETTINGS_DIR="$HOME/.config/faster_whisper_hotkey"
