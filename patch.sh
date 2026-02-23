@@ -90,6 +90,7 @@ else
 # PATCHED: headless-xdotool-v3
 import logging
 import os
+import re
 import subprocess
 import threading
 import warnings
@@ -99,15 +100,8 @@ import numpy as np
 
 warnings.filterwarnings(
     "ignore",
-    message="invalid escape sequence '\\s'",
+    message="invalid escape sequence",
     category=SyntaxWarning,
-    module="lhotse.recipes.iwslt22_ta",
-)
-warnings.filterwarnings(
-    "ignore",
-    message="invalid escape sequence '\\('",
-    category=SyntaxWarning,
-    module="pydub.utils",
 )
 
 from .settings import save_settings, load_settings, Settings
@@ -115,6 +109,47 @@ from .transcriber import MicrophoneTranscriber
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+
+KEY_COMMANDS = {
+    "enter": "Return",
+    "shift enter": "shift+Return",
+    "control enter": "ctrl+Return",
+    "ctrl enter": "ctrl+Return",
+    "tab": "Tab",
+    "shift tab": "shift+Tab",
+    "escape": "Escape",
+    "backspace": "BackSpace",
+    "delete": "Delete",
+    "space": "space",
+    "up": "Up",
+    "down": "Down",
+    "left": "Left",
+    "right": "Right",
+    "home": "Home",
+    "end": "End",
+    "page up": "Prior",
+    "page down": "Next",
+    "control a": "ctrl+a",
+    "ctrl a": "ctrl+a",
+    "control c": "ctrl+c",
+    "ctrl c": "ctrl+c",
+    "control v": "ctrl+v",
+    "ctrl v": "ctrl+v",
+    "control z": "ctrl+z",
+    "ctrl z": "ctrl+z",
+    "control s": "ctrl+s",
+    "ctrl s": "ctrl+s",
+    "control x": "ctrl+x",
+    "ctrl x": "ctrl+x",
+}
+
+
+def _check_key_command(text):
+    cleaned = text.strip().lower()
+    cleaned = re.sub(r"[.,!?;:]+$", "", cleaned).strip()
+    if cleaned in KEY_COMMANDS:
+        return KEY_COMMANDS[cleaned]
+    return None
 
 
 def _parecord_reader(self):
@@ -154,7 +189,7 @@ def _patched_start_recording(self):
         ]
         if source:
             cmd.extend(["--device", source])
-        logger.info(f"parecord cmd: {' '.join(cmd)}")
+        logger.info("parecord cmd: %s", " ".join(cmd))
         self._parec_proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
@@ -224,13 +259,21 @@ def _xdotool_transcribe_and_send(self, audio_data):
             sample_rate=self.sample_rate,
             language=self.settings.language,
         )
-        logger.info(f"Transcription result: '{transcribed_text}'")
+        logger.info(f"Transcription result: {transcribed_text!r}")
         if transcribed_text.strip():
-            subprocess.run(
-                ["xdotool", "type", "--clearmodifiers", "--delay", "20",
-                 "--", transcribed_text],
-                env={**os.environ},
-            )
+            key_cmd = _check_key_command(transcribed_text)
+            if key_cmd:
+                logger.info(f"Voice key command: {transcribed_text!r} -> xdotool key {key_cmd}")
+                subprocess.run(
+                    ["xdotool", "key", "--clearmodifiers", key_cmd],
+                    env={**os.environ},
+                )
+            else:
+                subprocess.run(
+                    ["xdotool", "type", "--clearmodifiers", "--delay", "20",
+                     "--", transcribed_text],
+                    env={**os.environ},
+                )
         else:
             logger.warning("Empty transcription - no text to type")
     except Exception as e:
